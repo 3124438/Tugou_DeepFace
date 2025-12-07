@@ -8,19 +8,19 @@ import tensorflow.keras.backend as K
 from streamlit_webrtc import webrtc_streamer, VideoTransformerBase
 from collections import deque
 import av
-from deepface import DeepFace # 追加
+from deepface import DeepFace
 
 # =================================================
 # ⚙️ 設定エリア
 # =================================================
-MODEL_FILE_NAME = "best_sign_model.keras" # 手話モデル
-CLASS_NAMES = ["Label 1", "Label 2", "Label 3", "Label 4"] # 手話ラベル
+MODEL_FILE_NAME = "best_sign_model.keras" 
+CLASS_NAMES = ["Label 1", "Label 2", "Label 3", "Label 4"] 
 
-# 表情（顔文字とローマ字）の定義
+# 表情定義
 EMOTION_DATA = {
     "neutral":  (" . _ . ", "MAGAO"),
     "happy":    ("^ v ^",   "URESHII"),
-    "surprise": ("O . O !", "BIKKURI"),
+    "surprise":("O . O !", "BIKKURI"),
     "sad":      ("T . T",   "KANASHII"),
     "angry":    ("> _ < #", "OKOTTERU"),
     "fear":     ("; O O ;", "KOWAI"),
@@ -28,7 +28,7 @@ EMOTION_DATA = {
 }
 
 # =================================================
-# Attention層 (モデル読み込み用)
+# Attention層
 # =================================================
 @tf.keras.utils.register_keras_serializable()
 class Attention(Layer):
@@ -74,7 +74,7 @@ mp_drawing = mp.solutions.drawing_utils
 st.sidebar.title("System Control")
 DEBUG_MODE = st.sidebar.checkbox("デバッグモード（詳細表示）", value=False)
 st.sidebar.write("---")
-st.sidebar.info("チェックを入れると、骨格や詳細データが表示されます。")
+st.sidebar.info("チェックを入れると、右側にAIの解析データが表示されます。")
 
 # ------------------------------------------------
 # 映像処理クラス
@@ -101,39 +101,30 @@ class VideoProcessor(VideoTransformerBase):
         self.romaji = "MAGAO"
 
     def transform(self, frame):
-        # 1. 画像取得
         img = frame.to_ndarray(format="bgr24")
         img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
         
         h, w, _ = img.shape
         font = cv2.FONT_HERSHEY_SIMPLEX
 
-        # ---------------------------------------------------------
-        # 2. 表情分析 (DeepFace) - 10フレームに1回実行
-        # ---------------------------------------------------------
+        # --- DeepFace (10フレームに1回) ---
         self.frame_count += 1
         if self.frame_count % 10 == 0:
             try:
-                # actions=['emotion']のみ指定して軽量化
                 objs = DeepFace.analyze(
                     img_path=img, 
                     actions=['emotion'], 
-                    enforce_detection=False, # 顔が見つからなくてもエラーにしない
-                    detector_backend='opencv' # 軽量な検出器
+                    enforce_detection=False,
+                    detector_backend='opencv'
                 )
                 self.last_emotion_key = objs[0]['dominant_emotion']
-                
-                # 辞書から顔文字とローマ字を取得
                 data = EMOTION_DATA.get(self.last_emotion_key, ("?", "?"))
                 self.kaomoji = data[0]
                 self.romaji = data[1]
-                
             except Exception:
-                pass # エラー時は前の表情を維持
+                pass
 
-        # ---------------------------------------------------------
-        # 3. 手話分析 (MediaPipe + Model)
-        # ---------------------------------------------------------
+        # --- MediaPipe & Model ---
         results = self.holistic.process(img_rgb)
         
         has_pose = results.pose_landmarks is not None
@@ -142,26 +133,17 @@ class VideoProcessor(VideoTransformerBase):
         
         self.status_text = f"P[{'O' if has_pose else 'X'}] L[{'O' if has_lh else 'X'}] R[{'O' if has_rh else 'X'}]"
 
-        # 張り付き防止対策
         if not has_pose:
             self.warning_msg = "STEP BACK!"
             self.probs = self.probs * 0.9 
             if self.result_conf > 0: self.result_conf *= 0.9
         else:
             self.warning_msg = ""
-            
             if model is not None:
                 pose = np.array([[res.x, res.y, res.z] for res in results.pose_landmarks.landmark])
-                if has_lh:
-                    lh = np.array([[res.x, res.y, res.z] for res in results.left_hand_landmarks.landmark])
-                else:
-                    lh = np.zeros((21, 3))
-                if has_rh:
-                    rh = np.array([[res.x, res.y, res.z] for res in results.right_hand_landmarks.landmark])
-                else:
-                    rh = np.zeros((21, 3))
+                lh = np.array([[res.x, res.y, res.z] for res in results.left_hand_landmarks.landmark]) if has_lh else np.zeros((21, 3))
+                rh = np.array([[res.x, res.y, res.z] for res in results.right_hand_landmarks.landmark]) if has_rh else np.zeros((21, 3))
 
-                # 正規化
                 if np.sum(pose) != 0:
                     left_shoulder = pose[11]
                     right_shoulder = pose[12]
@@ -186,7 +168,6 @@ class VideoProcessor(VideoTransformerBase):
                         self.probs = prediction[0]
                         idx = np.argmax(self.probs)
                         self.result_conf = self.probs[idx]
-                        
                         if idx < len(CLASS_NAMES):
                             self.result_label = CLASS_NAMES[idx]
                         else:
@@ -195,72 +176,81 @@ class VideoProcessor(VideoTransformerBase):
                         pass
 
         # ---------------------------------------------------------
-        # 4. 描画分岐
+        # 4. 描画分岐 (レイアウト修正版)
         # ---------------------------------------------------------
         
-        # 【A】デバッグモードの場合（コックピット表示）
+        # 【A】デバッグモード（右パネル表示）
         if self.debug:
-            # 骨格を描画
+            # 骨格描画
             mp_drawing.draw_landmarks(img, results.pose_landmarks, mp_holistic.POSE_CONNECTIONS)
             mp_drawing.draw_landmarks(img, results.left_hand_landmarks, mp_holistic.HAND_CONNECTIONS)
             mp_drawing.draw_landmarks(img, results.right_hand_landmarks, mp_holistic.HAND_CONNECTIONS)
 
-            # ダッシュボード作成
+            # パネル作成
             panel_w = 320
             canvas = np.zeros((h, w + panel_w, 3), dtype=np.uint8)
             canvas[:h, :w] = img
 
-            # ダッシュボード情報描画
             x_start = w + 10
-            y_cursor = 40
-            
-            # --- 手話セクション ---
-            cv2.putText(canvas, "AI Analysis", (x_start, y_cursor), font, 0.8, (255, 255, 255), 2)
-            y_cursor += 40
-            
+            y_cursor = 30 # 初期位置を少し上に修正
+
+            # --- 1. System Status ---
+            cv2.putText(canvas, "System Status", (x_start, y_cursor), font, 0.6, (200, 200, 200), 1)
+            y_cursor += 25 # 行間を詰める
             p_color = (0, 255, 0) if has_pose else (0, 0, 255)
             cv2.putText(canvas, self.status_text, (x_start, y_cursor), font, 0.5, p_color, 1)
-            y_cursor += 40
+            y_cursor += 25
             cv2.line(canvas, (w, y_cursor), (w+panel_w, y_cursor), (100, 100, 100), 1)
-            y_cursor += 30
+            y_cursor += 25
 
-            cv2.putText(canvas, "Sign Result:", (x_start, y_cursor), font, 0.6, (200, 200, 200), 1)
-            y_cursor += 35
-            cv2.putText(canvas, self.result_label, (x_start, y_cursor), font, 1.0, (0, 255, 255), 2)
+            # --- 2. Sign Result ---
+            cv2.putText(canvas, "Sign Prediction:", (x_start, y_cursor), font, 0.6, (200, 200, 200), 1)
+            y_cursor += 30
+            cv2.putText(canvas, self.result_label, (x_start, y_cursor), font, 0.9, (0, 255, 255), 2)
+            y_cursor += 25
+            cv2.line(canvas, (w, y_cursor), (w+panel_w, y_cursor), (100, 100, 100), 1)
+            y_cursor += 25
+
+            # --- 3. Face Emotion (修正: 横並びで1行に) ---
+            cv2.putText(canvas, "Face Emotion:", (x_start, y_cursor), font, 0.6, (200, 200, 200), 1)
             y_cursor += 30
             
-            # --- 表情セクション (追加) ---
+            # 顔文字を左に
+            cv2.putText(canvas, self.kaomoji, (x_start, y_cursor), font, 0.8, (255, 255, 255), 2)
+            # ローマ字を右に配置（+130pxずらす）
+            cv2.putText(canvas, self.romaji, (x_start + 130, y_cursor), font, 0.6, (0, 255, 255), 1)
+            
+            y_cursor += 25
             cv2.line(canvas, (w, y_cursor), (w+panel_w, y_cursor), (100, 100, 100), 1)
-            y_cursor += 30
-            cv2.putText(canvas, "Face Emotion:", (x_start, y_cursor), font, 0.6, (200, 200, 200), 1)
-            y_cursor += 40
-            # 顔文字
-            cv2.putText(canvas, self.kaomoji, (x_start, y_cursor), font, 1.0, (255, 255, 255), 2)
-            y_cursor += 30
-            # ローマ字
-            cv2.putText(canvas, self.romaji, (x_start, y_cursor), font, 0.7, (0, 255, 255), 1)
-            y_cursor += 30
+            y_cursor += 25
 
-            # --- 確率バー ---
-            cv2.line(canvas, (w, y_cursor), (w+panel_w, y_cursor), (100, 100, 100), 1)
-            y_cursor += 30
+            # --- 4. Probabilities (修正: ぎゅっと詰める) ---
             cv2.putText(canvas, "Probabilities:", (x_start, y_cursor), font, 0.6, (200, 200, 200), 1)
             y_cursor += 20
+            
             bar_max_width = 180
             for i, prob in enumerate(self.probs):
                 class_name = CLASS_NAMES[i] if i < len(CLASS_NAMES) else str(i)
-                y_cursor += 20
-                cv2.putText(canvas, f"{class_name}", (x_start, y_cursor), font, 0.5, (255, 255, 255), 1)
+                
+                # 文字を小さく、行間を狭く
+                y_cursor += 15 
+                cv2.putText(canvas, f"{class_name}", (x_start, y_cursor), font, 0.45, (255, 255, 255), 1)
+                
                 y_bar = y_cursor + 5
-                cv2.rectangle(canvas, (x_start, y_bar), (x_start + bar_max_width, y_bar + 10), (50, 50, 50), -1)
+                # バーの背景
+                cv2.rectangle(canvas, (x_start, y_bar), (x_start + bar_max_width, y_bar + 8), (50, 50, 50), -1)
+                # バー本体
                 bar_w = int(prob * bar_max_width)
                 bar_color = (0, 0, 255) if prob == max(self.probs) else (0, 255, 0)
                 if bar_w > 0:
-                    cv2.rectangle(canvas, (x_start, y_bar), (x_start + bar_w, y_bar + 10), bar_color, -1)
-                cv2.putText(canvas, f"{prob*100:.0f}%", (x_start + bar_max_width + 10, y_bar + 8), font, 0.4, (200, 200, 200), 1)
-                y_cursor += 20
+                    cv2.rectangle(canvas, (x_start, y_bar), (x_start + bar_w, y_bar + 8), bar_color, -1)
+                
+                # パーセント表示
+                cv2.putText(canvas, f"{prob*100:.0f}%", (x_start + bar_max_width + 5, y_bar + 7), font, 0.4, (200, 200, 200), 1)
+                
+                y_cursor += 15 # 次のグラフへの間隔
 
-            # 警告表示（中央）
+            # 警告表示
             if self.warning_msg:
                 cv2.rectangle(canvas, (50, h//2 - 40), (w-50, h//2 + 40), (0, 0, 255), 2)
                 cv2.rectangle(canvas, (52, h//2 - 38), (w-52, h//2 + 38), (0, 0, 0), -1)
@@ -270,21 +260,19 @@ class VideoProcessor(VideoTransformerBase):
 
             return canvas
 
-        # 【B】通常モードの場合（シンプル表示）
+        # 【B】通常モード（シンプル表示）
         else:
-            # 1. 手話の結果（左上）
+            # 左上：手話結果
             cv2.putText(img, f"Result: {self.result_label}", (10, 50), font, 1.0, (0, 255, 0), 2, cv2.LINE_AA)
             
-            # 2. 表情の結果（右上に顔文字とローマ字）
+            # 右上：表情結果 (横並びにはしないで見やすく)
             # 顔文字
-            cv2.putText(img, self.kaomoji, (w - 200, 50), font, 1.0, (0, 0, 0), 4) # 黒フチ
-            cv2.putText(img, self.kaomoji, (w - 200, 50), font, 1.0, (255, 255, 255), 2) # 白文字
-            
-            # ローマ字（その下）
+            cv2.putText(img, self.kaomoji, (w - 200, 50), font, 1.0, (0, 0, 0), 4)
+            cv2.putText(img, self.kaomoji, (w - 200, 50), font, 1.0, (255, 255, 255), 2)
+            # ローマ字
             cv2.putText(img, self.romaji, (w - 200, 90), font, 0.7, (0, 0, 0), 4)
             cv2.putText(img, self.romaji, (w - 200, 90), font, 0.7, (0, 255, 255), 2)
 
-            # 警告表示
             if self.warning_msg:
                  cv2.putText(img, self.warning_msg, (50, h//2), font, 2.0, (0, 0, 255), 3)
 
@@ -294,13 +282,13 @@ class VideoProcessor(VideoTransformerBase):
 # アプリ画面構成
 # ------------------------------------------------
 st.title("AI 手話 & 表情分析")
-st.write("手話モデルと表情(DeepFace)の統合テスト")
+st.write("統合テスト v2: レイアウト調整版")
 
 if model is None:
     st.error("モデルが読み込めませんでした。")
 else:
     webrtc_streamer(
-        key=f"sign-language-unified-{DEBUG_MODE}",
+        key=f"sign-language-layout-{DEBUG_MODE}",
         video_processor_factory=VideoProcessor,
         rtc_configuration={"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]},
         media_stream_constraints={"video": True, "audio": False},
