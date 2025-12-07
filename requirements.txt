@@ -1,0 +1,9 @@
+streamlit
+streamlit-webrtc
+tensorflow==2.16.1
+mediapipe==0.10.14
+av
+numpy<2.0.0
+deepface
+tf-keras
+opencv-python-headless
